@@ -214,7 +214,7 @@ function putFile(fileStat,completedRanges){
 
             connections++;
             if(connections > MAX_CONNECTIONS){
-                return;
+                //return; remove the "//"  chars, you can test resumable upload...
             }
 
             putChunkFile(fileStat,buffer,parseInt(start),end,function(){

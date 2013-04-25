@@ -148,34 +148,38 @@ function postFiles(req,res){
             contentDescription:req.headers["content-disposition"],
             chunkSize:contentRange.end - contentRange.start + 1
         },function(fileMetaData){
-            //setFileHeader
+
             res.setHeader("Location","/file/" + fileId);
-            setFileHeader(res,fileMetaData);
-            reply(res,STATUS_CODE.Created);
+            setFileHeader(res,fileMetaData,function(){
+                reply(res,STATUS_CODE.Created);
+            });
+
         });
 }
 
 function getFile(req,res,fileId){
     fileManager.getFile(fileId,function(metadata,readStream){
-        setFileHeader(res,metadata);
-        res.writeHead(STATUS_CODE.OK);
-        if(readStream){
-            readStream.on("open",function(){
-                readStream.pipe(res);
-            })
-            readStream.on("end",function(){
+        setFileHeader(res,metadata,function(){
+            res.writeHead(STATUS_CODE.OK);
+            if(readStream){
+                readStream.on("open",function(){
+                    readStream.pipe(res);
+                })
+                readStream.on("end",function(){
+                    res.end();
+                })
+            }else{
                 res.end();
-            })
-        }else{
-            res.end();
-        }
+            }
+        });
     });
 }
 
 function headFile(req,res,fileId){
     var metadata = new fileManager.FileMetadata(fileId);
-    setFileHeader(res,metadata);
-    reply(res,STATUS_CODE.OK);
+    setFileHeader(res,metadata,function(){
+        reply(res,STATUS_CODE.OK);
+    });
 }
 
 function putFile(req,res,fileId){
@@ -194,19 +198,25 @@ function putFile(req,res,fileId){
 
 }
 
-function setFileHeader(res,metadata){
-
-    if(metadata.hasCompleted()){
-        res.setHeader("range","bytes="+metadata.fileSize+"/"+metadata.fileSize);
-    }
-    else{
+function setFileHeader(res,metadata,callback){
+    metadata.hasCompleted(function(result){
+        if(result){
+            res.setHeader("range","bytes=" + metadata.fileSize + "/" + metadata.fileSize);
+            res.setHeader("content-type", metadata.contentType);
+            callback();
+            return;
+        }
         var ranges = [];
-        metadata.getChunks().forEach(function(chunk){
-            ranges.push(chunk.start +"-"+  chunk.end);
+        metadata.getChunks(function(chunks){
+
+            chunks.forEach(function(chunk){
+                ranges.push(chunk.start +"-"+  chunk.end);
+            });
+
+            console.log(ranges.join())
+            res.setHeader("range","bytes=" + (ranges.join() || 0) + "/"+metadata.fileSize);
+            res.setHeader("content-type",metadata.contentType);
+            callback();
         });
-        console.log(ranges.join());
-        res.setHeader("range","bytes="+(ranges.join() || 0)+"/"+metadata.fileSize);
-    }
-    res.setHeader("content-type",metadata.contentType);
-    res.setHeader("range-size",metadata.chunkSize);
+    });
 }

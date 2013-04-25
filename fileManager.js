@@ -16,75 +16,97 @@ function FileMetadata(id,fileSize,options){
     this.fileName = options.fileName;
 }
 
-FileMetadata.prototype.update = function(){
+FileMetadata.prototype.update = function(callback){
     var filePath = getFilePath(this.id)+".metadata";
-    fs.writeFileSync(filePath,JSON.stringify(this));
+    fs.writeFile(filePath,JSON.stringify(this),callback);
 }
 
-FileMetadata.prototype.getChunks = function(){
+FileMetadata.prototype.getChunks = function(callback){
     var self = this;
-    var chunks = [];
-    fs.readdirSync(__dirname + "/files/").forEach(function(fileName){
-        if(fileName.indexOf(self.id) > -1 && fileName.indexOf(".part")>-1){
-            var start = parseInt(fileName.split('.')[1]);
-            var end = start + self.getChunkSize(start) -1;
-            chunks.push({start:start,end:end});
-        }
-    });
-    return chunks;
+    fs.readdir(__dirname + "/files/",function(err,files){
+
+        var chunks = [];
+        var count = 0;
+        files.forEach(function(fileName){
+            count++;
+            if(fileName.indexOf(self.id) > -1 && fileName.indexOf(".part")>-1){
+                var start = parseInt(fileName.split('.')[1]);
+                self.getChunkSize(start,function(size){
+                    var end = start + size -1;
+                    //console.log(size);
+                    chunks.push({start:start,end:end});
+                    if(count === files.length){
+                        callback(chunks);
+                    }
+                })
+            }else{
+                if(count === files.length){
+                    callback(chunks);
+                }
+            }
+        });
+    })
 }
 
 FileMetadata.prototype.getChunkPath = function(start){
     return getFilePath(this.id)+"." + start + ".part";
 }
 
-FileMetadata.prototype.getChunkSize = function(start){
-    var chunkPath = this.getChunkPath(start);
-    if(fs.existsSync(chunkPath)){
-        var stat = fs.statSync(chunkPath);
-        return stat.size;
-    }
-    return 0;
-    //return fs.existsSync(getFilePath(this.id)+".part."+start);
-};
-
-FileMetadata.prototype.hasCompleted = function(){
-    var result = true;
-    var start = 0;
-    while(start < this.fileSize - 1){
-        var chunkSize = this.getChunkSize(start);
-        if(chunkSize == 0){
-            result = false;
-            break;
+FileMetadata.prototype.getChunkSize = function(start,callback){
+    fs.stat(this.getChunkPath(start),function(err,stats){
+        if(err){
+            callback(0);
+        }else{
+            callback(0 || stats.size);
         }
-        start += chunkSize;
-    }
-    return result;
+    })
 };
 
 FileMetadata.prototype.hasCombined = function(callback){
     var self = this;
-    fs.stat(getFilePath(this.id),function(stat){
-        callback(stat != null && stat.size == self.fileSize);
-
+    fs.stat(getFilePath(this.id),function(err,stats){
+        callback(stats.size === self.fileSize);
     })
+}
+
+FileMetadata.prototype.hasCompleted = function(callback){
+    var result = true;
+    var self = this;
+    hasChunk(0)
+    function hasChunk(start){
+        if(start >= self.fileSize){
+            callback(true);
+            return;
+        }
+
+        self.getChunkSize(start,function(chunkSize){
+            if(chunkSize == 0){
+                result = false;
+                callback(false)
+                return;
+            }
+
+            hasChunk(start += chunkSize);
+        })
+    }
 };
 
 function reply(metadata,callback){
-
-    if(!metadata.hasCompleted()){
-        callback(metadata);
-        return;
-    }
-
-    metadata.hasCombined(function(combined){
-        if(!combined){
-            combineChunkFiles(metadata,function(){
-                callback(metadata);
-            });
-        }else{
+    metadata.hasCompleted(function(result){
+        if(!result){
             callback(metadata);
+            return;
         }
+
+        metadata.hasCombined(function(combined){
+            if(!combined){
+                combineChunkFiles(metadata,function(){
+                    callback(metadata);
+                });
+            }else{
+                callback(metadata);
+            }
+        });
     });
 }
 
@@ -93,13 +115,14 @@ function getFilePath(id){
 }
 
 function createFile(fileId,fileSize,options,callback){
-    fs.mkdir(__dirname + "/files/")
-    var buffer = new Buffer(0);
-    fs.writeFile(getFilePath(fileId),buffer,function(){
-        var metadata = new FileMetadata(fileId,fileSize,options);
-        metadata.update();
-        reply(metadata,callback);
-    });
+    fs.mkdir(__dirname + "/files/",function(){
+        var buffer = new Buffer(0);
+        fs.writeFile(getFilePath(fileId),buffer,function(){
+            var metadata = new FileMetadata(fileId,fileSize,options);
+            metadata.update();
+            reply(metadata,callback);
+        });
+    })
 }
 
 function getFile(fileId,callback){
@@ -137,17 +160,18 @@ function combineChunkFiles(metadata,callback){
 
             fs.writeFile(filePath,data,{flag:'a'},function(){
 
-                start += metadata.getChunkSize(start);
+                metadata.getChunkSize(start,function(chunkSize){
+                    start += chunkSize;
+                    fs.unlink(chunkPath,function(){});
 
-                fs.unlink(chunkPath,function(){});
-
-                if(start >= metadata.fileSize){
-                    //global[metadata.id] = undefined;
-                    console.log("upload completed!")
-                    reply(metadata,callback);
-                }else{
-                    combineOneChunk(start);
-                }
+                    if(start >= metadata.fileSize){
+                        //global[metadata.id] = undefined;
+                        console.log("upload completed!")
+                        reply(metadata,callback);
+                    }else{
+                        combineOneChunk(start);
+                    }
+                });
             })
         })
     }
@@ -159,9 +183,9 @@ function writeFileChunk(fileId,start,end,buffer,callback){
         if(combined){
             reply(metadata,callback);
             return;
-        }else{
-            //check chunk have wrote?
-            if(metadata.getChunkSize(start,end) > 0){
+        }
+        metadata.getChunkSize(start,function(chunkSize){
+            if(chunkSize > 0){
                 reply(metadata,callback)
                 return;
             }
@@ -169,13 +193,13 @@ function writeFileChunk(fileId,start,end,buffer,callback){
             fs.open(metadata.getChunkPath(start),"w",function(err,fd){
                 fs.write(fd,buffer,0,buffer.length,0,function(err){
                     if(err) throw err;
+
                     fs.close(fd,function(){
                         reply(metadata,callback);
                     });
                 });
             });
-        }
-
+        });
     });
 
 }

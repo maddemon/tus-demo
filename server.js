@@ -1,4 +1,9 @@
 var urlUtils = require("url");
+//var ex = require("./exceptions");
+var fileManager = require("./fileManager");
+var uid = require("./uid");
+
+
 var routes = {
     "file":/\/file\/([\w-]+)\/?/,
     "files":/\/files\/?/,
@@ -85,6 +90,7 @@ function reply(res,statusCode,content){
     res.writeHeader(statusCode,{"Content-Type":"text/plain"});
     res.write(content || "");
     res.end();
+    if(content)  console.log(content);
 }
 
 function getCurrentUrl(pathname){
@@ -112,7 +118,12 @@ function getFileId(url){
     return "";
 }
 
-function ContentRange(contentRangeValue){
+function ContentRange(req){
+    var contentRangeValue = req.headers["content-range"];
+    if(!contentRangeValue){
+        throw new ex.ArgumentsException("no content-range");
+    }
+
     //console.log(contentRangeValue);
     //value: bytes 0-99/100 | bytes */100 | bytes 0-99
     var re = /bytes (((\d+)-(\d+))|\*)(\/(\d+))?/;
@@ -121,7 +132,7 @@ function ContentRange(contentRangeValue){
         this.start = parseInt(groups[3] || 0);
         this.end = parseInt(groups[4] || groups[6]);
         if(this.end < this.start){
-            throw new Error("range end must grater than start")
+            throw new ex.ArgumentsException("range end must grater than start")
         }
         this.size = parseInt(groups[6] || this.end);
     }else{
@@ -129,61 +140,65 @@ function ContentRange(contentRangeValue){
     }
 
     if(this.end > this.size) this.end = this.size - 1;
+
+    var chunkSize = req.headers["chunk-size"];
+    if(chunkSize){
+        this.chunkSize = parseInt(chunkSize);
+    }
 }
 
-var fileManager = require("./fileManager");
-var uid = require("./uid");
 function postFiles(req,res){
     //console.log(req.headers);
-    var contentRange = new ContentRange(req.headers["content-range"]);
+    var contentRange = new ContentRange(req);
     if(contentRange.size < 0){
         reply(res,STATUS_CODE.BadRequest,"Content-Range must indicate total file size.");
         return;
     }
+    if(!contentRange.chunkSize){
+        reply(res,STATUS_CODE.BadRequest,"Chunk-Size must be indicated on PostFile");
+        return;
+    }
+
 
     var fileId = uid.v4();
-    fileManager.createFile(fileId,contentRange.size,
+    fileManager.createFile(fileId,contentRange.size,contentRange.chunkSize,
         {
             contentType:req.headers["content-type"] || "application/octet-stream",
             contentDescription:req.headers["content-disposition"],
-            chunkSize:contentRange.end - contentRange.start + 1
+            fileName:req.headers["file-name"]
         },function(fileMetaData){
 
             res.setHeader("Location","/file/" + fileId);
-            setFileHeader(res,fileMetaData,function(){
-                reply(res,STATUS_CODE.Created);
-            });
-
+            setFileHeader(res,fileMetaData);
+            reply(res,STATUS_CODE.Created);
         });
 }
 
 function getFile(req,res,fileId){
     fileManager.getFile(fileId,function(metadata,readStream){
-        setFileHeader(res,metadata,function(){
-            res.writeHead(STATUS_CODE.OK);
-            if(readStream){
-                readStream.on("open",function(){
-                    readStream.pipe(res);
-                })
-                readStream.on("end",function(){
-                    res.end();
-                })
-            }else{
+        setFileHeader(res,metadata);
+        res.writeHead(STATUS_CODE.OK);
+        if(readStream){
+            readStream.on("open",function(){
+                readStream.pipe(res);
+            })
+            readStream.on("end",function(){
                 res.end();
-            }
-        });
+            })
+        }else{
+            res.end();
+        }
     });
 }
 
 function headFile(req,res,fileId){
     var metadata = new fileManager.FileMetadata(fileId);
-    setFileHeader(res,metadata,function(){
-        reply(res,STATUS_CODE.OK);
-    });
+    setFileHeader(res,metadata);
+    reply(res,STATUS_CODE.OK);
 }
 
 function putFile(req,res,fileId){
-    var contentRange = new ContentRange(req.headers["content-range"]);
+    var contentRange = new ContentRange(req);
     var buffer = new Buffer(contentRange.end - contentRange.start + 1);
     var offset = 0;
     req.on("data",function(data){
@@ -191,32 +206,27 @@ function putFile(req,res,fileId){
         data.copy(buffer,offset)
         offset += data.length;
     }).on("end",function(){
-            fileManager.writeFileChunk(fileId,contentRange.start,contentRange.end,buffer,function(fileMetadata){
-                reply(res,STATUS_CODE.OK);
-            });
+        fileManager.writeFileChunk(fileId,contentRange.start,contentRange.end,buffer,function(fileMetadata){
+            reply(res,STATUS_CODE.OK);
         });
+    });
 
 }
 
-function setFileHeader(res,metadata,callback){
-    metadata.hasCompleted(function(result){
-        if(result){
-            res.setHeader("range","bytes=" + metadata.fileSize + "/" + metadata.fileSize);
-            res.setHeader("content-type", metadata.contentType);
-            callback();
-            return;
-        }
-        var ranges = [];
-        metadata.getChunks(function(chunks){
+function setFileHeader(res,metadata){
+    if(metadata.hasCompleted()){
+        res.setHeader("range","bytes=" + metadata.fileSize + "/" + metadata.fileSize);
+        res.setHeader("content-type", metadata.contentType);
+        return;
+    }
 
-            chunks.forEach(function(chunk){
-                ranges.push(chunk.start +"-"+  chunk.end);
-            });
+    var ranges = [];
+    for(var start in metadata.chunks){
+        ranges.push(start,metadata.chunks[start]);
+    }
 
-            console.log(ranges.join())
-            res.setHeader("range","bytes=" + (ranges.join() || 0) + "/"+metadata.fileSize);
-            res.setHeader("content-type",metadata.contentType);
-            callback();
-        });
-    });
+    console.log(ranges);
+
+    res.setHeader("range","bytes=" + (ranges.join() || 0) + "/"+metadata.fileSize);
+    res.setHeader("content-type",metadata.contentType);
 }

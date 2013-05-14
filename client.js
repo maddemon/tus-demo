@@ -29,6 +29,7 @@ function FileStat(filePath,stat){
     this.fileSize = stat.fileSize || stat.size;
     this.remoteId = stat.remoteId || 0;
     this.chunkSize = stat.chunkSize || CHUNK_SIZE;
+    console.log(CHUNK_SIZE);
 
     fs.writeFile(getCachePath(filePath),JSON.stringify(this),function(){})
 }
@@ -69,8 +70,12 @@ FileStat.prototype.printProceeding = function(){
     if(args.length < 3){
         throw new Error("miss argument:filePath");
     }
-    if(args.length < 5){
+    if(args.length > 3){
+        console.log(args.length);
         CHUNK_SIZE = parseInt(args[3]) * 1024;
+        if(CHUNK_SIZE === NaN){
+            CHUNK_SIZE = 128 * 1024;
+        }
     }
     var filePath = args[2];
 
@@ -96,6 +101,7 @@ function createRequest(path,method,headers,callback){
             data += chunk;
         });
         res.on("end",function(){
+            console.log(data);
             callback(res,data);
         })
     });
@@ -135,19 +141,20 @@ function postFile(fileStat,callback){
         return;
     };
 
-
     var req = createRequest("/files/","POST",
         {
             "content-range":"bytes */"+ fileStat.fileSize,
-            "range-size":fileStat.chunkSize
+            "chunk-size":fileStat.chunkSize
         },
         function(res){
             //console.log(res.headers);
             var location = res.headers.location;
-            fileStat.remoteId = location.substring(location.lastIndexOf('/')+1);
-            fileStat.update(function(){
-                reply(fileStat,callback);
-            })
+            if(location){
+                fileStat.remoteId = location.substring(location.lastIndexOf('/')+1);
+                fileStat.update(function(){
+                    reply(fileStat,callback);
+                })
+            };
         });
     sendRequest(req);
 }
@@ -231,6 +238,7 @@ function putFile(fileStat,completedRanges){
 }
 
 function putChunkFile(fileStat,buffer,start,end,callback){
+
     if(!end || !buffer) return;
 
     var req = createRequest("/file/"+fileStat.remoteId,"PUT",{"content-range":"bytes " + start + "-" + end},

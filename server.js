@@ -35,7 +35,7 @@ function start(req,res){
     console.log("received request:" + url + " content-range:" + req.headers["content-range"]);
 
     if(url == "/"){
-        reply(res,"Hello NodeJs!")
+        reply(res,"Hello NodeJs!");
         return;
     }
 
@@ -124,8 +124,10 @@ function ContentRange(req){
         throw new ex.ArgumentsException("no content-range");
     }
 
-    //console.log(contentRangeValue);
     //value: bytes 0-99/100 | bytes */100 | bytes 0-99
+    //PostFile 必须有size
+    //PutFile 必须有start和end，如果是*则start为0 end为size
+
     var re = /bytes (((\d+)-(\d+))|\*)(\/(\d+))?/;
     var groups = contentRangeValue.match(re);
     if(groups){
@@ -140,38 +142,28 @@ function ContentRange(req){
     }
 
     if(this.end > this.size) this.end = this.size - 1;
-
-    var chunkSize = req.headers["chunk-size"];
-    if(chunkSize){
-        this.chunkSize = parseInt(chunkSize);
-    }
 }
 
 function postFiles(req,res){
     //console.log(req.headers);
     var contentRange = new ContentRange(req);
-    if(contentRange.size < 0){
+    if(!contentRange.size || contentRange.size < 0){
         reply(res,STATUS_CODE.BadRequest,"Content-Range must indicate total file size.");
         return;
     }
-    if(!contentRange.chunkSize){
-        reply(res,STATUS_CODE.BadRequest,"Chunk-Size must be indicated on PostFile");
-        return;
-    }
-
 
     var fileId = uid.v4();
-    fileManager.createFile(fileId,contentRange.size,contentRange.chunkSize,
-        {
-            contentType:req.headers["content-type"] || "application/octet-stream",
-            contentDescription:req.headers["content-disposition"],
-            fileName:req.headers["file-name"]
-        },function(fileMetaData){
+    fileManager.createFile(fileId,contentRange.size,
+	{
+		contentType:req.headers["content-type"] || "application/octet-stream",
+		contentDescription:req.headers["content-disposition"],
+		fileName:req.headers["file-name"]
+	},function(fileMetaData){
 
-            res.setHeader("Location","/file/" + fileId);
-            setFileHeader(res,fileMetaData);
-            reply(res,STATUS_CODE.Created);
-        });
+		res.setHeader("Location","/file/" + fileId);
+		setFileHeader(res,fileMetaData);
+		reply(res,STATUS_CODE.Created);
+	});
 }
 
 function getFile(req,res,fileId){
@@ -181,10 +173,10 @@ function getFile(req,res,fileId){
         if(readStream){
             readStream.on("open",function(){
                 readStream.pipe(res);
-            })
+            });
             readStream.on("end",function(){
                 res.end();
-            })
+            });
         }else{
             res.end();
         }
@@ -203,30 +195,23 @@ function putFile(req,res,fileId){
     var offset = 0;
     req.on("data",function(data){
         //console.log(data);
-        data.copy(buffer,offset)
+        data.copy(buffer,offset);
         offset += data.length;
     }).on("end",function(){
-        fileManager.writeFileChunk(fileId,contentRange.start,contentRange.end,buffer,function(fileMetadata){
+        fileManager.writeFileChunk(fileId,contentRange.start,buffer,function(fileMetadata){
             reply(res,STATUS_CODE.OK);
         });
     });
-
 }
 
 function setFileHeader(res,metadata){
-    if(metadata.hasCompleted()){
-        res.setHeader("range","bytes=" + metadata.fileSize + "/" + metadata.fileSize);
-        res.setHeader("content-type", metadata.contentType);
-        return;
-    }
+    
+	var ranges = metadata.getWriteRanges();
+	var values = [];
+	for(var start in ranges){
+		values.push(start+"-"+ranges[start]);
+	}
 
-    var ranges = [];
-    for(var start in metadata.chunks){
-        ranges.push(start,metadata.chunks[start]);
-    }
-
-    console.log(ranges);
-
-    res.setHeader("range","bytes=" + (ranges.join() || 0) + "/"+metadata.fileSize);
+    res.setHeader("range","bytes=" + (values.join() || 0) + "/"+metadata.fileSize);
     res.setHeader("content-type",metadata.contentType);
 }

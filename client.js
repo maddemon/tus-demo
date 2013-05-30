@@ -2,8 +2,8 @@ var fs = require("fs");
 var http = require("http");
 var urlUtils = require("url");
 var crypto = require("crypto");
-var HOST = "localhost"
-var PORT = "8088"
+var HOST = "localhost";
+var PORT = "8088";
 var CHUNK_SIZE = 128 * 1024;
 var MAX_CONNECTIONS = 5;
 
@@ -73,7 +73,7 @@ FileStat.prototype.printProceeding = function(){
     if(args.length > 3){
         console.log(args.length);
         CHUNK_SIZE = parseInt(args[3]) * 1024;
-        if(CHUNK_SIZE === NaN){
+        if(isNaN(CHUNK_SIZE)){
             CHUNK_SIZE = 128 * 1024;
         }
     }
@@ -143,8 +143,7 @@ function postFile(fileStat,callback){
 
     var req = createRequest("/files/","POST",
         {
-            "content-range":"bytes */"+ fileStat.fileSize,
-            "chunk-size":fileStat.chunkSize
+            "content-range":"bytes */"+ fileStat.fileSize
         },
         function(res){
             //console.log(res.headers);
@@ -221,7 +220,7 @@ function putFile(fileStat,completedRanges){
 
             connections++;
             if(connections > MAX_CONNECTIONS){
-                //return; remove the "//"  chars, you can test resumable upload...
+                //return; //超过最大连接数就停止，如果注释掉就会无视连接数，不注释就可以测试断掉续传
             }
 
             putChunkFile(fileStat,buffer,parseInt(start),end,function(){
@@ -239,7 +238,12 @@ function putFile(fileStat,completedRanges){
 
 function putChunkFile(fileStat,buffer,start,end,callback){
 
-    if(!end || !buffer) return;
+    if(!end || !buffer){
+        return;
+    }
+    if(end>fileStat.fileSize){
+        end = fileStat.fileSize;
+    }
 
     var req = createRequest("/file/"+fileStat.remoteId,"PUT",{"content-range":"bytes " + start + "-" + end},
         function(res){
